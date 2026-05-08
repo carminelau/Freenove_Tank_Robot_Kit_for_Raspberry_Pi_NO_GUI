@@ -2,9 +2,6 @@ import sys                                             # Import the sys module f
 import struct                                          # Import the struct module for packing and unpacking binary data
 import time                                            # Import the time module for timing functions
 import signal                                          # Import the signal module for handling signals
-from PyQt5.QtWidgets import QMainWindow, QApplication  # Import QMainWindow and QApplication from PyQt5.QtWidgets
-from PyQt5.QtCore import QTimer                        # Import QTimer from PyQt5.QtCore
-from server_ui import Ui_server_ui                     # Import the UI class from the server_ui module
 
 from server import TankServer                           # Import the TankServer class from the server module
 import threading                                       # Import the threading module for creating threads
@@ -15,22 +12,11 @@ from led import Led                                    # Import the Led class fr
 from camera import Camera                              # Import the Camera class from the camera module
 from car import Car                                    # Import the Car class from the car module
 
-class mywindow(QMainWindow, Ui_server_ui):
+class TankServerController:
     def __init__(self):
-        self.app = QApplication(sys.argv)              # Initialize the QApplication with command-line arguments
-        super(mywindow, self).__init__()               # Call the superclass constructor
-        self.setupUi(self)                             # Set up the user interface
         self.ui_button_state = True                    # Initialize the UI button state
         self.config_task()                             # Configure tasks
-        self.Button_Server.clicked.connect(self.on_pushButton_handle)  # Connect the button click event to the handler
-        if self.ui_button_state:
-            self.on_pushButton_handle()                                # Handle the button click if the UI button state is True
-        self.app.lastWindowClosed.connect(self.close_application)      # Connect the last window closed event to the close application method
         signal.signal(signal.SIGINT, self.signal_handler)              # Set up a signal handler for SIGINT (Ctrl+C)
-        
-        self.timer = QTimer(self)                       # Create a QTimer object
-        self.timer.timeout.connect(self.check_signals)  # Connect the timer timeout event to the check signals method
-        self.timer.start(100)                           # Start the timer with an interval of 100 milliseconds
 
     def config_task(self):
         self.tcp_server = TankServer()                 # Initialize the TCP server
@@ -58,6 +44,21 @@ class mywindow(QMainWindow, Ui_server_ui):
         self.left_wheel_speed = 0                      # Initialize the left wheel speed
         self.right_wheel_speed = 0                     # Initialize the right wheel speed
 
+    def start_server(self):
+        self.tcp_server.startTcpServer()               # Start the TCP server
+        self.set_threading_cmd_receive(True)           # Start the command receive thread
+        self.set_threading_video_send(True)            # Start the video send thread
+        self.set_threading_car_task(True)              # Start the car task thread
+        self.set_process_led_running(True)             # Start the LED process
+
+    def stop_server(self):
+        self.tcp_server.stopTcpServer()                # Stop the TCP server
+        self.set_threading_cmd_receive(False)          # Stop the command receive thread
+        self.set_threading_video_send(False)           # Stop the video send thread
+        self.set_threading_car_task(False)             # Stop the car task thread
+        self.set_process_led_running(False)            # Stop the LED process
+        self.tcp_server = TankServer()                 # Reinitialize the TCP server
+
     def stop_car(self):
         self.led.colorWipe([0, 0, 0])                  # Turn off the LEDs
         self.camera.stop_stream()                      # Stop the camera stream
@@ -68,20 +69,11 @@ class mywindow(QMainWindow, Ui_server_ui):
         if self.label.text() == "Server Off":
             self.label.setText("Server On")            # Change the label text to "Server On"
             self.Button_Server.setText("Off")          # Change the button text to "Off"
-            self.tcp_server.startTcpServer()           # Start the TCP server
-            self.set_threading_cmd_receive(True)       # Start the command receive thread
-            self.set_threading_video_send(True)        # Start the video send thread
-            self.set_threading_car_task(True)          # Start the car task thread
-            self.set_process_led_running(True)         # Start the LED process
+            self.start_server()                        # Start the server
         elif self.label.text() == 'Server On':
             self.label.setText("Server Off")           # Change the label text to "Server Off"
             self.Button_Server.setText("On")           # Change the button text to "On"
-            self.tcp_server.stopTcpServer()            # Stop the TCP server
-            self.set_threading_cmd_receive(False)      # Stop the command receive thread
-            self.set_threading_video_send(False)       # Stop the video send thread
-            self.set_threading_car_task(False)         # Stop the car task thread
-            self.set_process_led_running(False)        # Stop the LED process
-            self.tcp_server = TankServer()             # Reinitialize the TCP server
+            self.stop_server()                         # Stop the server
 
     def set_threading_cmd_receive(self, state, close_time=0.3):
         if self.cmd_thread is None:
@@ -324,7 +316,8 @@ class mywindow(QMainWindow, Ui_server_ui):
         if self.led_process and self.led_process.is_alive():    # If the LED process is running
             self.led_process.terminate()                        # Terminate the LED process
             self.led_process.join(0.1)                          # Wait for the LED process to finish, with a timeout
-        self.app.quit()                                         # Quit the application
+        if hasattr(self, "app"):                                # If the UI application is initialized
+            self.app.quit()                                     # Quit the application
         sys.exit(1)                                             # Exit the program with status code 1
 
     def signal_handler(self, signal, frame):             # Signal handler to catch Ctrl+C
@@ -332,12 +325,50 @@ class mywindow(QMainWindow, Ui_server_ui):
         self.close_application()                         # Call the method to close the application
 
     def check_signals(self):             # Method to check for pending events and exit conditions
+        if not hasattr(self, "app"):     # If there is no UI application
+            return                       # Nothing to process
         if self.app.hasPendingEvents():  # If there are pending events
             self.app.processEvents()     # Process the pending events
         if not self.ui_button_state and not self.cmd_thread_is_running and not self.video_thread_is_running and not self.led_process_is_running and not self.action_process_is_running:  # If all threads and processes are stopped
             self.app.quit()              # Quit the application
 
-if __name__ == '__main__':        # Entry point of the script
+def run_headless():
+    controller = TankServerController()   # Create the server controller without GUI
+    controller.start_server()             # Start the server
+    print("Tank server started in headless mode")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Received interrupt signal, stopping server...")
+        controller.close_application()
+
+def run_gui():
+    from PyQt5.QtWidgets import QMainWindow, QApplication  # Import only when GUI mode is used
+    from PyQt5.QtCore import QTimer                        # Import only when GUI mode is used
+    from server_ui import Ui_server_ui                     # Import only when GUI mode is used
+
+    class mywindow(QMainWindow, Ui_server_ui, TankServerController):
+        def __init__(self):
+            self.app = QApplication(sys.argv)              # Initialize the QApplication with command-line arguments
+            super(mywindow, self).__init__()               # Call the superclass constructor
+            self.setupUi(self)                             # Set up the user interface
+            TankServerController.__init__(self)            # Configure server tasks
+            self.Button_Server.clicked.connect(self.on_pushButton_handle)  # Connect the button click event to the handler
+            if self.ui_button_state:
+                self.on_pushButton_handle()                # Handle the button click if the UI button state is True
+            self.app.lastWindowClosed.connect(self.close_application)      # Connect the last window closed event to the close application method
+
+            self.timer = QTimer(self)                       # Create a QTimer object
+            self.timer.timeout.connect(self.check_signals)  # Connect the timer timeout event to the check signals method
+            self.timer.start(100)                           # Start the timer with an interval of 100 milliseconds
+
     myshow = mywindow()           # Create an instance of the main window
     myshow.show()                 # Show the main window
     sys.exit(myshow.app.exec_())  # Run the application and exit with the appropriate status code
+
+if __name__ == '__main__':        # Entry point of the script
+    if "--headless" in sys.argv:
+        run_headless()
+    else:
+        run_gui()
